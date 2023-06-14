@@ -9,11 +9,10 @@ BED file: ${params.bedfile}.bed
 Sequences in:${params.sequences}
 """
 process trimming_trimmomatic {
- 
         input:
-			val Sample
+		val Sample
         output:
-                        tuple val (Sample), file("*1P.fq.gz"), file("*2P.fq.gz")
+                tuple val (Sample), file("*1P.fq.gz"), file("*2P.fq.gz")
         script:
         """
         ${params.trimmomatic_path}trimmomatic PE \
@@ -25,12 +24,11 @@ process trimming_trimmomatic {
         """
 }
 process pair_assembly_pear {
-	
         input:
-			tuple val (Sample), file(paired_forward), file(paired_reverse)
+		tuple val (Sample), file(paired_forward), file(paired_reverse)
 
         output:
-			tuple val (Sample), file("*.assembled.fastq")
+		tuple val (Sample), file("*.assembled.fastq")
 
         script:
         """
@@ -40,16 +38,33 @@ process pair_assembly_pear {
 }
 process mapping_reads {
 	input:
-			tuple val (Sample), file(pairAssembled)
+		tuple val (Sample), file(pairAssembled)
 
 	output: 
-		        tuple val (Sample), file ("*.sam")
+		tuple val (Sample), file ("*.sam")
 	
 	script:
         """
 	bwa mem -R "@RG\\tID:AML\\tPL:ILLUMINA\\tLB:LIB-MIPS\\tSM:${Sample}\\tPI:200" -M -t 20 ${params.genome} ${pairAssembled} > ${Sample}.sam 
         """     
 }
+
+process mark_duplicates {
+        input:
+                tuple val (Sample), file (sorted_bam), file (sorted_bam_index)
+        output:
+                tuple val (Sample), file ("*.bam"), file ("*.bam.bai"),  file ("*.txt")
+        script:
+        """
+        ${params.java_path}/java -jar ${params.picard_path} MarkDuplicates \
+              I=${sorted_bam} \
+              O=${Sample}_sorted_marked.bam \
+              M=${Sample}_picard.info.txt
+              REMOVE_DUPLICATES=true \
+        ${params.samtools} index ${Sample}_sorted_marked.bam > ${Sample}_sorted_marked.bam.bai
+        """
+}
+
 process sam_conversion{
 	input:
 			tuple val (Sample), file(samfile)
@@ -65,6 +80,39 @@ process sam_conversion{
 
 	"""
 }
+process RealignerTargetCreator {
+        input:
+                tuple val (Sample), file (bamFile), file (bamBai), file (pi_card_info)
+        output:
+                tuple val (Sample), file ("*.intervals")
+        script:
+        """
+         ${params.java_path}/java -Xmx8G -jar ${params.GATK38_path} -T RealignerTargetCreator -R ${params.genome} -nt 10 -I ${bamFile} --known ${params.site1} -o ${Sample}_target.intervals
+        """
+}
+
+process IndelRealigner {
+        input:
+                tuple val (Sample), file (target_interval), file (bamFile), file (bamBai), file (pi_card_info)
+        output:
+                tuple val (Sample), file ("*.realigned.bam")
+        script:
+        """
+        echo ${Sample} ${target_interval} ${bamFile}
+        ${params.java_path}/java -Xmx8G -jar ${params.GATK38_path} -T IndelRealigner -R ${params.genome} -I ${bamFile} -known ${params.site1} --targetIntervals ${target_interval} -o ${Sample}.realigned.bam
+        """
+}
+
+process BaseRecalibrator {
+        input:
+                tuple val (Sample), file (realignedBam)
+        output:
+                tuple val(Sample), file ("*.recal_data.table")
+        script:
+        """
+        ${params.java_path}/java -Xmx8G -jar ${params.GATK38_path} -T BaseRecalibrator -R ${params.genome} -I ${realignedBam} -knownSites ${params.site2} -knownSites ${params.site3} -maxCycle 600 -o ${Sample}.recal_data.table
+        """
+}
 workflow WES {
 
     Channel
@@ -75,7 +123,8 @@ workflow WES {
                 .set { samples_ch }
 
         main:
-        trimming_trimmomatic(samples_ch) | pair_assembly_pear | mapping_reads | sam_conversion
-
+        trimming_trimmomatic(samples_ch) | pair_assembly_pear | mapping_reads | sam_conversion | mark_duplicates
+        RealignerTargetCreator(mark_duplicates.out)
+        IndelRealigner(RealignerTargetCreator.out.join(mark_duplicates.out)) | BaseRecalibrator
 }
 
