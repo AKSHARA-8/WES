@@ -314,6 +314,19 @@ process cava {
 	"""
 }
 
+process merge_csv {
+	publishDir "$PWD/Final_Output/${Sample}/", mode: 'copy', pattern: '*.xlsx'
+	input:
+		tuple val (Sample), file (cava_csv)
+	output:
+		val Sample
+	script:
+	"""
+	python3 ${params.pharma_marker_script} ${Sample} $PWD/Final_Output/${Sample}/${Sample}_vep_delheaders.txt ${params.pharma_input_xlxs} ${PWD}/${Sample}/${Sample}_pharma.csv
+	python3 ${params.merge_csvs_script} ${Sample} ${cava_csv} ${PWD}/Final_Output/${Sample}/${Sample}.xlsx  $PWD/Final_Output/${Sample}/${Sample}_cov.mosdepth.summary.txt $PWD/Final_Output/${Sample}/${Sample}_cov.regions.bed $PWD/Final_Output/${Sample}/${Sample}_median50 $PWD/Final_Output/${Sample}/${Sample}_pindel.vep.txt $PWD/Final_Output/${Sample}/${Sample}_somaticseq.vep.txt
+	"""
+}
+
 workflow WES {
 
 	Channel
@@ -340,4 +353,5 @@ workflow WES {
 		pindel(generatefinalbam.out)
 		somaticSeq_run(lofreq.out.join(varscan.out.join(platypus.out.join(strelka.out.join(haplotypecaller.out.join(freebayes.out.join(generatefinalbam.out)))))))
 		cava(somaticSeq_run.out)
+		merge_csv(cava.out)
 }
